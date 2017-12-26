@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.CocoaTouch.XIB" version="3.0" toolsVersion="13771" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" colorMatched="YES">
+    <device id="retina4_7" orientation="portrait">
+        <adaptation id="fullscreen"/>
+    </device>
+    <dependencies>
+        <deployment identifier="iOS"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="13772"/>
+        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+    </dependencies>
+    <objects>
+        <placeholder placeholderIdentifier="IBFilesOwner" id="-1" userLabel="File's Owner" customClass="ClientViewController">
+            <connections>
+                <outlet property="btn" destination="m1N-zI-1KR" id="zx4-u5-F5c"/>
+                <outlet property="stateLable" destination="5KH-bY-QXi" id="Qub-rI-uqg"/>
+                <outlet property="tf_filename" destination="yU8-QS-d6J" id="pYb-ap-nQJ"/>
+                <outlet property="tf_ip" destination="CEX-VT-57D" id="wlm-Ji-ZES"/>
+                <outlet property="view" destination="i5M-Pr-FkT" id="sfx-zR-JGt"/>
+            </connections>
+        </placeholder>
+        <placeholder placeholderIdentifier="IBFirstResponder" id="-2" customClass="UIResponder"/>
+        <view clearsContextBeforeDrawing="NO" contentMode="scaleToFill" id="i5M-Pr-FkT">
+            <rect key="frame" x="0.0" y="0.0" width="375" height="667"/>
+            <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+            <subviews>
+                <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="客户端准备完毕，可以连接服务器进行下载" textAlignment="center" lineBreakMode="tailTruncation" numberOfLines="0" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="5KH-bY-QXi">
+                    <rect key="frame" x="20" y="293.5" width="335" height="80"/>
+                    <constraints>
+                        <constraint firstAttribute="height" constant="80" id="Pg9-wH-d9z"/>
+                    </constraints>
+                    <fontDescription key="fontDescription" type="system" pointSize="17"/>
+                    <nil key="textColor"/>
+                    <nil key="highlightedColor"/>
+                </label>
+                <button opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="m1N-zI-1KR">
+                    <rect key="frame" x="105" y="403.5" width="165" height="35"/>
+                    <color key="backgroundColor" red="0.43025554399999999" green="0.7390902063" blue="0.9192116857" alpha="1" colorSpace="custom" customColorSpace="displayP3"/>
+                    <constraints>
+                        <constraint firstAttribute="height" constant="35" id="25p-yk-XEt"/>
+                        <constraint firstAttribute="width" constant="165" id="XWj-pi-KNb"/>
+                    </constraints>
+                    <state key="normal" title="连接服务器下载"/>
+                    <state key="selected" title="断开连接停止下载"/>
+                    <connections>
+                        <action selector="clickBtnAction" destination="-1" eventType="touchUpInside" id="dxk-oH-YUP"/>
+                    </connections>
+                </button>
+                <textField opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="left" contentVerticalAlignment="center" borderStyle="roundedRect" placeholder="服务器IP地址" textAlignment="center" minimumFontSize="17" translatesAutoresizingMaskIntoConstraints="NO" id="CEX-VT-57D">
+                    <rect key="frame" x="30" y="163.5" width="315" height="40"/>
+                    <constraints>
+                        <constraint firstAttribute="height" constant="40" id="aCm-ry-M6M"/>
+                    </constraints>
+                    <nil key="textColor"/>
+                    <fontDescription key="fontDescription" type="system" pointSize="14"/>
+                    <textInputTraits key="textInputTraits" keyboardType="decimalPad"/>
+                </textField>
+                <textField opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="left" contentVerticalAlignment="center" borderStyle="roundedRect" placeholder="文件名" textAlignment="center" minimumFontSize="17" translatesAutoresizingMaskIntoConstraints="NO" id="yU8-QS-d6J">
+                    <rect key="frame" x="30" y="233.5" width="315" height="40"/>
+                    <constraints>
+                        <constraint firstAttribute="height" constant="40" id="Bek-mo-CXa"/>
+                    </constraints>
+                    <nil key="textColor"/>
+                    <fontDescription key="fontDescription" type="system" pointSize="14"/>
+                    <textInputTraits key="textInputTraits"/>
+                </textField>
+            </subviews>
+            <color key="backgroundColor" red="1" green="1" blue="1" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+            <constraints>
+                <constraint firstAttribute="trailing" secondItem="5KH-bY-QXi" secondAttribute="trailing" constant="20" id="Bu3-Lp-5pE"/>
+                <constraint firstItem="m1N-zI-1KR" firstAttribute="centerX" secondItem="i5M-Pr-FkT" secondAttribute="centerX" id="EdP-5G-cOl"/>
+                <constraint firstAttribute="trailing" secondItem="yU8-QS-d6J" secondAttribute="trailing" constant="30" id="L3V-9L-2Np"/>
+                <constraint firstAttribute="trailing" secondItem="CEX-VT-57D" secondAttribute="trailing" constant="30" id="SE7-aa-kUe"/>
+                <constraint firstItem="5KH-bY-QXi" firstAttribute="leading" secondItem="i5M-Pr-FkT" secondAttribute="leading" constant="20" id="aev-bT-1MN"/>
+                <constraint firstItem="m1N-zI-1KR" firstAttribute="top" secondItem="5KH-bY-QXi" secondAttribute="bottom" constant="30" id="k2V-zh-hqp"/>
+                <constraint firstItem="5KH-bY-QXi" firstAttribute="centerY" secondItem="i5M-Pr-FkT" secondAttribute="centerY" id="kZs-l0-pZ8"/>
+                <constraint firstItem="yU8-QS-d6J" firstAttribute="top" secondItem="CEX-VT-57D" secondAttribute="bottom" constant="30" id="m9w-gQ-EpP"/>
+                <constraint firstItem="yU8-QS-d6J" firstAttribute="leading" secondItem="i5M-Pr-FkT" secondAttribute="leading" constant="30" id="tI3-gG-E01"/>
+                <constraint firstItem="CEX-VT-57D" firstAttribute="leading" secondItem="i5M-Pr-FkT" secondAttribute="leading" constant="30" id="yPl-vK-hg6"/>
+                <constraint firstItem="5KH-bY-QXi" firstAttribute="top" secondItem="yU8-QS-d6J" secondAttribute="bottom" constant="20" id="zsq-ol-M8Z"/>
+            </constraints>
+            <point key="canvasLocation" x="33.5" y="53.5"/>
+        </view>
+    </objects>
+</document>
