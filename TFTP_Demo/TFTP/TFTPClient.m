@@ -13,6 +13,137 @@
 #import <arpa/inet.h>
 #include <sys/time.h>
 
+#define TFTP_RRQ   1   //读请求
+#define TFTP_WRQ   2   //写请求
+#define TFTP_DATA  3   //数据
+#define TFTP_ACK   4   //ACK确认
+#define TFTP_ERROR 5   //Error
+
+#define MAX_RETRY          3              //最大重复请求次数
+#define TFTP_BlockSize     512            //每个数据包截取文件的大小(相对发送包而言,这个是去掉操作码和块号剩余的大小)
+
+typedef enum : NSUInteger {
+    TFTPClientErrorCode_Socket_Error            = 0,
+    TFTPClientErrorCode_SendData_Fail           = 1,
+    TFTPClientErrorCode_RecvData_Fail           = 2,
+    TFTPClientErrorCode_RequesrData_Timeout     = 3,
+    TFTPClientErrorCode_RecvErrorPacket         = 4,
+} TFTPClientErrorCode;
+
+@interface TFTPClientError : NSObject
+///根据错误码返回错误
++ (NSError *)errorWithTFTPErrorCode:(TFTPClientErrorCode)errorCode;
+@end
+
+@implementation TFTPClientError
+
++ (NSError *)errorWithTFTPErrorCode:(TFTPClientErrorCode)errorCode
+{
+    NSString *description;
+    
+    switch (errorCode) {
+        case TFTPClientErrorCode_Socket_Error:
+            description = @"套接字发生错误 -> 客户端连接错误";
+            break;
+        case TFTPClientErrorCode_SendData_Fail:
+            description = @"套接字发送数据错误 -> 客户端下载出现错误";
+            break;
+        case TFTPClientErrorCode_RecvData_Fail:
+            description = @"套接字接收数据错误 -> 客户端下载出现错误";
+            break;
+        case TFTPClientErrorCode_RequesrData_Timeout:
+            description = @"对于同一个数据包，请求次数达到上限 -> 客户端下载数据超时";
+            break;
+        case TFTPClientErrorCode_RecvErrorPacket:
+            description = @"收到服务器发送过来的差错包或者是错误数据包";
+            break;
+            
+        default:
+            description = @"未知错误";
+            break;
+    }
+    return [NSError errorWithDomain:@"TFTPClientError" code:errorCode userInfo:@{@"description" : description}];
+}
+@end
+
+
+@interface TFTPClientPacket : NSObject
+/**
+ *  @brief  制作RRQ数据包 -> 文件请求包
+ *
+ *  @param  filename    文件名
+ *  @param  sendBuffer  发送数据包缓冲区
+ *  @return 需要发送数据的长度
+ */
++ (NSUInteger)makeRRQWithFileName:(NSString *)filename
+                       sendBuffer:(char[])sendBuffer;
+/**
+ *  @brief  制作ACK数据包 -> 文件确认包
+ *
+ *  @param  blocknum    确认块号
+ *  @param  sendBuffer  发送数据包缓冲区
+ *  @return 需要发送数据的长度
+ */
++ (NSUInteger)makeACKWithBlockNum:(int)blocknum
+                       sendBuffer:(char[])sendBuffer;
+/**
+ *  @brief  填充差错包
+ *
+ *  @param  code        差错码
+ *  @param  reason      差错信息
+ *  @param  sendBuffer  要发送数据缓存区
+ *  @return 返回取药发送数据包长度
+ */
++ (NSUInteger)makeErrorDataWithCode:(ushort)code
+                             reason:(char *)reason
+                         sendBuffer:(char[])sendBuffer;
+@end
+
+@implementation TFTPClientPacket
+
++ (NSUInteger)makeRRQWithFileName:(NSString *)filename sendBuffer:(char [])sendBuffer
+{
+    //操作码(2byte) + 文件名(Nbyte) + 模式(N字节)
+    
+    sendBuffer[0] = 0;
+    sendBuffer[1] = TFTP_RRQ;
+    
+    const char *cFileName = filename.UTF8String;
+    NSUInteger cFileLen = strlen(cFileName);
+    memcpy(&sendBuffer[2], cFileName, cFileLen);
+    
+    return (2 + cFileLen);
+}
+
++ (NSUInteger)makeACKWithBlockNum:(int)blocknum sendBuffer:(char[])sendBuffer
+{
+    //操作码(2byte) + 块号(2byte)
+    
+    sendBuffer[0] = 0;
+    sendBuffer[1] = TFTP_ACK;
+    
+    sendBuffer[2] = blocknum >> 8;
+    sendBuffer[3] = blocknum;
+    return 4;
+}
+
++ (NSUInteger)makeErrorDataWithCode:(ushort)code reason:(char *)reason sendBuffer:(char[])sendBuffer
+{
+    //操作码(2byte) + 差错码(2byte) + 差错信息(N byte)
+    sendBuffer[0] = 0;
+    sendBuffer[1] = TFTP_ERROR;
+    
+    sendBuffer[2] = code >> 8;
+    sendBuffer[3] = code;
+    
+    NSUInteger len = strlen(reason);
+    memcpy(&sendBuffer[4], reason, len);
+    
+    return (4 + len);
+}
+@end
+
+
 @interface TFTPClient () {
     int _sockfd;
     uint _blocknum;
@@ -264,82 +395,3 @@
 }
 
 @end
-
-@implementation TFTPClientPacket
-
-+ (NSUInteger)makeRRQWithFileName:(NSString *)filename sendBuffer:(char [])sendBuffer
-{
-    //操作码(2byte) + 文件名(Nbyte) + 模式(N字节)
-    
-    sendBuffer[0] = 0;
-    sendBuffer[1] = TFTP_RRQ;
-    
-    const char *cFileName = filename.UTF8String;
-    NSUInteger cFileLen = strlen(cFileName);
-    memcpy(&sendBuffer[2], cFileName, cFileLen);
-    
-    return (2 + cFileLen);
-}
-
-+ (NSUInteger)makeACKWithBlockNum:(int)blocknum sendBuffer:(char[])sendBuffer
-{
-    //操作码(2byte) + 块号(2byte)
-    
-    sendBuffer[0] = 0;
-    sendBuffer[1] = TFTP_ACK;
-    
-    sendBuffer[2] = blocknum >> 8;
-    sendBuffer[3] = blocknum;
-    return 4;
-}
-
-+ (NSUInteger)makeErrorDataWithCode:(ushort)code reason:(char *)reason sendBuffer:(char[])sendBuffer
-{
-    //操作码(2byte) + 差错码(2byte) + 差错信息(N byte)
-    sendBuffer[0] = 0;
-    sendBuffer[1] = TFTP_ERROR;
-    
-    sendBuffer[2] = code >> 8;
-    sendBuffer[3] = code;
-    
-    NSUInteger len = strlen(reason);
-    memcpy(&sendBuffer[4], reason, len);
-    
-    return (4 + len);
-}
-
-@end
-
-@implementation TFTPClientError
-
-+ (NSError *)errorWithTFTPErrorCode:(TFTPClientErrorCode)errorCode
-{
-    NSString *description;
-    
-    switch (errorCode) {
-        case TFTPClientErrorCode_Socket_Error:
-            description = @"套接字发生错误 -> 客户端连接错误";
-            break;
-        case TFTPClientErrorCode_SendData_Fail:
-            description = @"套接字发送数据错误 -> 客户端下载出现错误";
-            break;
-        case TFTPClientErrorCode_RecvData_Fail:
-            description = @"套接字接收数据错误 -> 客户端下载出现错误";
-            break;
-        case TFTPClientErrorCode_RequesrData_Timeout:
-            description = @"对于同一个数据包，请求次数达到上限 -> 客户端下载数据超时";
-            break;
-        case TFTPClientErrorCode_RecvErrorPacket:
-            description = @"收到服务器发送过来的差错包或者是错误数据包";
-            break;
-            
-        default:
-            description = @"未知错误";
-            break;
-    }
-    return [NSError errorWithDomain:@"TFTPClientError" code:errorCode userInfo:@{@"description" : description}];
-}
-
-
-@end
-

@@ -13,6 +13,135 @@
 #import <arpa/inet.h>
 #include <sys/time.h>
 
+#define TFTP_RRQ   1   //读请求
+#define TFTP_WRQ   2   //写请求
+#define TFTP_DATA  3   //数据
+#define TFTP_ACK   4   //ACK确认
+#define TFTP_ERROR 5   //Error
+
+#define MAX_RETRY          3              //最大重复传送次数
+#define TFTP_BlockSize     512            //每个数据包截取文件的大小(相对发送包而言,这个是去掉操作码和块号剩余的大小)
+
+typedef enum : NSUInteger {
+    TFTPServerErrorCode_ServerSock_Error      = 0,
+    TFTPServerErrorCode_ReadFile_Fail         = 1,
+    TFTPServerErrorCode_SendData_Fail         = 2,
+    TFTPServerErrorCode_RecvData_Fail         = 3,
+    TFTPServerErrorCode_SendData_Timeout      = 4,
+    TFTPServerErrorCode_RecvErrorPacket       = 5,
+    
+} TFTPServerErrorCode;
+
+@interface TFTPError : NSObject
+///根据错误码返回错误
++ (NSError *)errorWithTFTPErrorCode:(TFTPServerErrorCode)errorCode;
+@end
+
+@implementation TFTPError
+
++ (NSError *)errorWithTFTPErrorCode:(TFTPServerErrorCode)errorCode
+{
+    NSString *description;
+    switch (errorCode) {
+        case TFTPServerErrorCode_ServerSock_Error:
+            description = @"套接字发生错误 -> 服务器连接错误";
+            break;
+        case TFTPServerErrorCode_ReadFile_Fail:
+            description = @"根据文件路径没有找到对应文件，应该是文件路径有问题";
+            break;
+        case TFTPServerErrorCode_SendData_Fail:
+            description = @"套接字发送数据错误 -> 服务器发生错误";
+            break;
+        case TFTPServerErrorCode_RecvData_Fail:
+            description = @"套接字读取数据错误-> 服务器发生错误";
+            break;
+        case TFTPServerErrorCode_SendData_Timeout:
+            description = @"套接字重发同一个数据包次数达到上限 -> 服务器发送数据超时";
+            break;
+        case TFTPServerErrorCode_RecvErrorPacket:
+            description = @"套接字接收到差错包或者错误包";
+            break;
+        default:
+            description = @"未知错误";
+            break;
+    }
+    
+    NSError *error = [NSError errorWithDomain:@"TFTPServerError" code:errorCode userInfo:@{@"description" : description}];
+    return error;
+}
+@end
+
+
+@interface TFTPServerPacket : NSObject
+/**
+ *  @brief  填充Data数据包
+ *
+ *  @param  totalData       总的数据包
+ *  @param  sendBuffer      要发送数据缓存区
+ *  @param  location        截取位置
+ *  @param  length          截取数据的长度 (0-512之间)
+ *  @param  blocknum        块号
+ *  @return 返回需要发送数据包的长度
+ */
++ (NSUInteger)makeDataWithTotalData:(NSData *)totalData
+                         sendBuffer:(char[])sendBuffer
+                           location:(NSUInteger)location
+                             length:(NSUInteger)length
+                           blocknum:(int)blocknum;
+/**
+ *  @brief  填充差错包
+ *
+ *  @param  code        差错码
+ *  @param  reason      差错信息
+ *  @param  sendBuffer  要发送数据缓存区
+ *  @return 返回取药发送数据包长度
+ */
++ (NSUInteger)makeErrorDataWithCode:(ushort)code
+                             reason:(char *)reason
+                         sendBuffer:(char[])sendBuffer;
+@end
+
+@implementation TFTPServerPacket
+
++ (NSUInteger)makeDataWithTotalData:(NSData *)totalData sendBuffer:(char[])sendBuffer location:(NSUInteger)location length:(NSUInteger)length blocknum:(int)blocknum
+{
+    //操作码(2byte) + 块号(2byte) + 数据(512byte) = 返回数据包(516byte)
+    //NSLog(@"[TFTPServer] -------->location:%lu length:%lu",location,length);
+    sendBuffer[0] = 0;
+    sendBuffer[1] = TFTP_DATA;
+    
+    sendBuffer[2] = blocknum >> 8;
+    sendBuffer[3] = blocknum;
+    
+    NSData *data;
+    if ((location + length) > totalData.length) {
+        data = [totalData subdataWithRange:NSMakeRange(location, totalData.length - location)];
+    }else {
+        data = [totalData subdataWithRange:NSMakeRange(location, length)];
+    }
+    Byte *temp = (Byte *)data.bytes;
+    memcpy(&sendBuffer[4], temp, data.length);
+    
+    return (4 + data.length);
+}
+
++ (NSUInteger)makeErrorDataWithCode:(ushort)code reason:(char *)reason sendBuffer:(char[])sendBuffer
+{
+    //操作码(2byte) + 差错码(2byte) + 差错信息(N byte)
+    sendBuffer[0] = 0;
+    sendBuffer[1] = TFTP_ERROR;
+    
+    sendBuffer[2] = code >> 8;
+    sendBuffer[3] = code;
+    
+    NSUInteger len = strlen(reason);
+    memcpy(&sendBuffer[4], reason, len);
+    
+    return (4 + len);
+}
+@end
+
+
 @interface TFTPServer () {
     int _sockfd;                        //套接字
     NSString *_filepath;                //OC字符串文件的前半部分
@@ -342,81 +471,3 @@
 
 @end
 
-
-
-@implementation TFTPServerPacket
-
-+ (NSUInteger)makeDataWithTotalData:(NSData *)totalData sendBuffer:(char[])sendBuffer location:(NSUInteger)location length:(NSUInteger)length blocknum:(int)blocknum
-{
-    //操作码(2byte) + 块号(2byte) + 数据(512byte) = 返回数据包(516byte)
-    //NSLog(@"[TFTPServer] -------->location:%lu length:%lu",location,length);
-    sendBuffer[0] = 0;
-    sendBuffer[1] = TFTP_DATA;
-    
-    sendBuffer[2] = blocknum >> 8;
-    sendBuffer[3] = blocknum;
-    
-    NSData *data;
-    if ((location + length) > totalData.length) {
-        data = [totalData subdataWithRange:NSMakeRange(location, totalData.length - location)];
-    }else {
-        data = [totalData subdataWithRange:NSMakeRange(location, length)];
-    }
-    Byte *temp = (Byte *)data.bytes;
-    memcpy(&sendBuffer[4], temp, data.length);
-    
-    return (4 + data.length);
-}
-
-+ (NSUInteger)makeErrorDataWithCode:(ushort)code reason:(char *)reason sendBuffer:(char[])sendBuffer
-{
-    //操作码(2byte) + 差错码(2byte) + 差错信息(N byte)
-    sendBuffer[0] = 0;
-    sendBuffer[1] = TFTP_ERROR;
-    
-    sendBuffer[2] = code >> 8;
-    sendBuffer[3] = code;
-    
-    NSUInteger len = strlen(reason);
-    memcpy(&sendBuffer[4], reason, len);
-    
-    return (4 + len);
-}
-
-@end
-
-
-@implementation TFTPError
-
-+ (NSError *)errorWithTFTPErrorCode:(TFTPServerErrorCode)errorCode
-{
-    NSString *description;
-    switch (errorCode) {
-        case TFTPServerErrorCode_ServerSock_Error:
-            description = @"套接字发生错误 -> 服务器连接错误";
-            break;
-        case TFTPServerErrorCode_ReadFile_Fail:
-            description = @"根据文件路径没有找到对应文件，应该是文件路径有问题";
-            break;
-        case TFTPServerErrorCode_SendData_Fail:
-            description = @"套接字发送数据错误 -> 服务器发生错误";
-            break;
-        case TFTPServerErrorCode_RecvData_Fail:
-            description = @"套接字读取数据错误-> 服务器发生错误";
-            break;
-        case TFTPServerErrorCode_SendData_Timeout:
-            description = @"套接字重发同一个数据包次数达到上限 -> 服务器发送数据超时";
-            break;
-        case TFTPServerErrorCode_RecvErrorPacket:
-            description = @"套接字接收到差错包或者错误包";
-            break;
-        default:
-            description = @"未知错误";
-            break;
-    }
-    
-    NSError *error = [NSError errorWithDomain:@"TFTPServerError" code:errorCode userInfo:@{@"description" : description}];
-    return error;
-}
-
-@end
