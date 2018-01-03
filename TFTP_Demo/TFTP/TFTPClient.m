@@ -258,6 +258,12 @@ typedef enum : NSUInteger {
         return;
     }
 
+    //设置读取数据超时
+    struct timeval timeout = {6, 0};
+    if (setsockopt(_sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)) < 0) {
+        printf("[TFTPClient] 设置接收数据超时失败：%s",strerror(errno));
+    }
+    
     //3. 开始监听数据返回
     while (1) {
 
@@ -267,8 +273,30 @@ typedef enum : NSUInteger {
 
         ssize_t result_recv = recvfrom(_sockfd, recvBuffer, sizeof(recvBuffer), 0, (struct sockaddr*)&addr_from, &addr_from_len);
         if (result_recv < 0 && _isOpen) {
-            [self throwError:TFTPClientErrorCode_RecvData_Fail];
-            return;
+            
+            if (errno == EAGAIN) { //读取数据超时
+                retry++;
+                if (retry >= MAX_RETRY) {
+                    NSLog(@"[TFTPClient] 请求超时,发送差错包给服务器");
+                    sendLen = [TFTPClientPacket makeErrorDataWithCode:1
+                                                               reason:"The maximum number of retransmissions"
+                                                           sendBuffer:sendBuffer];
+                    sendto(_sockfd, sendBuffer, sendLen, 0, (struct sockaddr*)_addr_server, _addr_server->sin_len);
+                    [self throwError:TFTPClientErrorCode_RequesrData_Timeout];
+                    return;
+                }else {
+                    //重发上一个ACK确认包
+                    NSLog(@"[TFTPClient] 客户端请求数据块超时,重发上个ACK(块号:%u)",_blocknum);
+                    if (sendto(_sockfd, sendBuffer, sendLen, 0, (struct sockaddr*)_addr_server, _addr_server->sin_len) < 0 && _isOpen) {
+                        [self throwError:TFTPClientErrorCode_SendData_Fail];
+                        return;
+                    }
+                    continue;
+                }
+            }else {
+                [self throwError:TFTPClientErrorCode_RecvData_Fail];
+                return;
+            }
         }
 
         //数据长度过短或不是我们需要服务器地址发送过来的数据都不是我们想要的数据, 直接丢掉
@@ -286,6 +314,8 @@ typedef enum : NSUInteger {
 
             //解析出块号, 与自己的块号作比较, 看看服务器有没有发错
             uint blocknum = (recvBuffer[2]&0xff)<<8 | (recvBuffer[3]&0xff);
+            //NSLog(@"[TFTPClient] 服务器发送过来数据包,块号：%u",blocknum);
+            
             if (blocknum == (_blocknum + 1)) {
 
                 retry = 0;
@@ -303,14 +333,11 @@ typedef enum : NSUInteger {
                     [self throwError:TFTPClientErrorCode_SendData_Fail];
                     return;
                 }
-
             }else {
-
-                NSLog(@"[TFTPClient] 服务器发送块号不对, 服务器发送的块号: %d  客户端应该接收到的块号: %d",blocknum,_blocknum);
-
+                //块号不对,进入重发机制
+                retry++;
                 if (retry >= MAX_RETRY) {
-
-                    //回个服务器一个差错包 -> 告诉服务器老是发块号错误的, 我不接了
+                    NSLog(@"[TFTPClient] 接收数据包错误次数达到上限,发送差错包给客户端");
                     sendLen = [TFTPClientPacket makeErrorDataWithCode:1
                                                                reason:"The maximum number of retransmissions"
                                                            sendBuffer:sendBuffer];
@@ -319,15 +346,14 @@ typedef enum : NSUInteger {
                     [self throwError:TFTPClientErrorCode_RequesrData_Timeout];
                     return;
                 }else {
-                    //重发上一个ACK确认包
+                    NSLog(@"[TFTPClient] 服务器发送块号不对(块号:%u), 重发送上个ACK确认包(块号:%u)",blocknum,_blocknum);
                     if (sendto(_sockfd, sendBuffer, sendLen, 0, (struct sockaddr*)_addr_server, _addr_server->sin_len) < 0 && _isOpen) {
                         [self throwError:TFTPClientErrorCode_SendData_Fail];
                         return;
                     }
                 }
-                retry++;
             }
-
+            
             if (isLastPacket) { //就收完成
                 [self recevComplete];
                 return;
