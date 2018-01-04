@@ -1,5 +1,6 @@
 # TFTP_Demo
 关于TFTP客户端和服务器端代码实现,包括数据块错误重传和超时重传,暂时不支持IPv6的网络,因为TFTP是基于UDP实现,所以需要客户端和服务器在同一个网络下面
+具体的步骤实现可以参考我的简述文章: https://www.jianshu.com/p/dd91caeaf80d
 
 ### TFTPServer (TFTP服务器端)
 ```
