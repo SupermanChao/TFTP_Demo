@@ -22,51 +22,6 @@
 #define MAX_RETRY          3              //最大重复请求次数
 #define TFTP_BlockSize     512            //每个数据包截取文件的大小(相对发送包而言,这个是去掉操作码和块号剩余的大小)
 
-typedef enum : NSUInteger {
-    TFTPClientErrorCode_Socket_Error            = 0,
-    TFTPClientErrorCode_SendData_Fail           = 1,
-    TFTPClientErrorCode_RecvData_Fail           = 2,
-    TFTPClientErrorCode_RequesrData_Timeout     = 3,
-    TFTPClientErrorCode_RecvErrorPacket         = 4,
-} TFTPClientErrorCode;
-
-@interface TFTPClientError : NSObject
-///根据错误码返回错误
-+ (NSError *)errorWithTFTPErrorCode:(TFTPClientErrorCode)errorCode;
-@end
-
-@implementation TFTPClientError
-
-+ (NSError *)errorWithTFTPErrorCode:(TFTPClientErrorCode)errorCode
-{
-    NSString *description;
-    
-    switch (errorCode) {
-        case TFTPClientErrorCode_Socket_Error:
-            description = @"套接字发生错误 -> 客户端连接错误";
-            break;
-        case TFTPClientErrorCode_SendData_Fail:
-            description = @"套接字发送数据错误 -> 客户端下载出现错误";
-            break;
-        case TFTPClientErrorCode_RecvData_Fail:
-            description = @"套接字接收数据错误 -> 客户端下载出现错误";
-            break;
-        case TFTPClientErrorCode_RequesrData_Timeout:
-            description = @"对于同一个数据包，请求次数达到上限 -> 客户端下载数据超时";
-            break;
-        case TFTPClientErrorCode_RecvErrorPacket:
-            description = @"收到服务器发送过来的差错包或者是错误数据包";
-            break;
-            
-        default:
-            description = @"未知错误";
-            break;
-    }
-    return [NSError errorWithDomain:@"TFTPClientError" code:errorCode userInfo:@{@"description" : description}];
-}
-@end
-
-
 @interface TFTPClientPacket : NSObject
 /**
  *  @brief  制作RRQ数据包 -> 文件请求包
@@ -147,7 +102,6 @@ typedef enum : NSUInteger {
 @interface TFTPClient () {
     int _sockfd;
     uint _blocknum;
-    struct sockaddr_in *_addr_server;   //指向服务器地址结构体指针
 }
 @property (nonatomic, strong) NSMutableData *fileData;
 @property (nonatomic, copy) void(^progressBlock)(NSUInteger recvDataLen, int blocknum);
@@ -171,37 +125,66 @@ typedef enum : NSUInteger {
         if (progressBlock) self.progressBlock = progressBlock;
         if (resultBlock) self.resultBlock = resultBlock;
         
-        //初始化服务器地址信息
+        //初始化套接字
+        _sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+        
+        if (_sockfd <= 0) {
+            [self throwErrorWithCode:errno reason:@"Failed to create socket"];
+            return ;
+        }
+        
+        struct sockaddr_in addr_bind;
+        addr_bind.sin_len = sizeof(struct sockaddr_in);
+        addr_bind.sin_family = AF_INET;
+        addr_bind.sin_port = htons(port);
+        addr_bind.sin_addr.s_addr = htonl(INADDR_ANY);
+        
+        if (bind(_sockfd, (struct sockaddr*)&addr_bind, addr_bind.sin_len) < 0) {
+            [self throwErrorWithCode:errno reason:@"Binding socket failed"];
+            return;
+        }
+
+        //注册套接字目的地址
         struct sockaddr_in addr_server;
         addr_server.sin_len = sizeof(struct sockaddr_in);
         addr_server.sin_family = AF_INET;
         addr_server.sin_port = htons(port);
         inet_pton(AF_INET, host.UTF8String, &addr_server.sin_addr);
         
-        _addr_server = &addr_server;
-        
-        //初始化套接字
-        if ([self initSocket] == NO) {
-            [self throwError:TFTPClientErrorCode_Socket_Error];
+        if (connect(_sockfd, (struct sockaddr*)&addr_server, addr_server.sin_len) < 0) {
+            [self throwErrorWithCode:errno reason:@"Registration destination address failed"];
             return;
         }
-
+        
+        //设置读取数据超时
+        struct timeval timeout = {6, 0};
+        if (setsockopt(_sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)) < 0) {
+            printf("[TFTPClient] 设置接收数据超时失败：%s",strerror(errno));
+        }
+        
         //发送文件请求包, 开始下载文件
         [self sendFileRequestDataWithFilename:filename];
-        
     });
 }
 
 ///外部调用关闭TFTP客户端, 先向服务为推送一个差错包, 然后关闭socket
 - (void)closeTFTPClient
 {
-    if (_sockfd > 0 && _addr_server != NULL) {
+    if (_sockfd > 0) {
         
-        char buffer[512];
-        NSUInteger len = [TFTPClientPacket makeErrorDataWithCode:3
-                                                          reason:"Client Close"
-                                                      sendBuffer:buffer];
-        sendto(_sockfd, buffer, len, 0, (struct sockaddr*)_addr_server, _addr_server->sin_len);
+        struct sockaddr_in addr_peer;
+        socklen_t addr_peer_len = sizeof(addr_peer);
+        addr_peer.sin_len = addr_peer_len;
+        
+        if (getpeername(_sockfd, (struct sockaddr*)&addr_peer, &addr_peer_len) == 0) {
+            if (addr_peer.sin_port != 0 && addr_peer.sin_addr.s_addr > 1) {
+                char buffer[512];
+                NSUInteger len = [TFTPClientPacket makeErrorDataWithCode:1004
+                                                                  reason:"Client Close"
+                                                              sendBuffer:buffer];
+                send(_sockfd, buffer, len, 0);
+            }
+        }
     }
     [self closeSocket];
 }
@@ -210,31 +193,6 @@ typedef enum : NSUInteger {
 {
     if (_sockfd > 0) close(_sockfd);
     _isOpen = NO;
-}
-
-///初始化套接字
-- (BOOL)initSocket
-{
-    _sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-
-    if (_sockfd <= 0) return NO;
-
-    struct sockaddr_in addr_server;
-    addr_server.sin_len = sizeof(struct sockaddr_in);
-    addr_server.sin_family = AF_INET;
-    addr_server.sin_port = _addr_server->sin_port;
-    addr_server.sin_addr.s_addr = htonl(INADDR_ANY);
-    
-    if (bind(_sockfd, (struct sockaddr*)&addr_server, addr_server.sin_len) < 0) return NO;
-
-    fd_set readfds, writefds;
-    FD_ZERO(&readfds); FD_ZERO(&writefds);
-    FD_SET(_sockfd, &readfds);
-    FD_SET(_sockfd, &writefds);
-    int num = select(FD_SETSIZE, &readfds, &writefds, NULL, NULL);
-    if (num <= 0) return NO;
-
-    return YES;
 }
 
 ///发送请求文件数据包 -> 开始下载文件
@@ -252,62 +210,50 @@ typedef enum : NSUInteger {
     //2. 发送文件请求包
     sendLen = [TFTPClientPacket makeRRQWithFileName:filename
                                          sendBuffer:sendBuffer];
-
-    if (sendto(_sockfd, sendBuffer, sendLen, 0, (struct sockaddr*)_addr_server, _addr_server->sin_len) < 0 && _isOpen) {
-        [self throwError:TFTPClientErrorCode_SendData_Fail];
+    if (send(_sockfd, sendBuffer, sendLen, 0) < 0 && _isOpen) {
+        [self throwErrorWithCode:errno reason:@"Read data error"];
         return;
-    }
-
-    //设置读取数据超时
-    struct timeval timeout = {6, 0};
-    if (setsockopt(_sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)) < 0) {
-        printf("[TFTPClient] 设置接收数据超时失败：%s",strerror(errno));
     }
     
     //3. 开始监听数据返回
     while (1) {
 
-        struct sockaddr_in addr_from;
-        socklen_t addr_from_len = sizeof(struct sockaddr_in);
-        addr_from.sin_len = addr_from_len;
-
-        ssize_t result_recv = recvfrom(_sockfd, recvBuffer, sizeof(recvBuffer), 0, (struct sockaddr*)&addr_from, &addr_from_len);
+        ssize_t result_recv = recv(_sockfd, recvBuffer, sizeof(recvBuffer), 0);
         if (result_recv < 0 && _isOpen) {
             
             if (errno == EAGAIN) { //读取数据超时
                 retry++;
                 if (retry >= MAX_RETRY) {
                     NSLog(@"[TFTPClient] 请求超时,发送差错包给服务器");
-                    sendLen = [TFTPClientPacket makeErrorDataWithCode:1
+                    sendLen = [TFTPClientPacket makeErrorDataWithCode:1001
                                                                reason:"The maximum number of retransmissions"
                                                            sendBuffer:sendBuffer];
-                    sendto(_sockfd, sendBuffer, sendLen, 0, (struct sockaddr*)_addr_server, _addr_server->sin_len);
-                    [self throwError:TFTPClientErrorCode_RequesrData_Timeout];
+                    send(_sockfd, sendBuffer, sendLen, 0);
+                    [self throwErrorWithCode:1001 reason:@"The maximum number of retransmissions"];
                     return;
                 }else {
                     //重发上一个ACK确认包
                     NSLog(@"[TFTPClient] 客户端请求数据块超时,重发上个ACK(块号:%u)",_blocknum);
-                    if (sendto(_sockfd, sendBuffer, sendLen, 0, (struct sockaddr*)_addr_server, _addr_server->sin_len) < 0 && _isOpen) {
-                        [self throwError:TFTPClientErrorCode_SendData_Fail];
+                    if (send(_sockfd, sendBuffer, sendLen, 0) < 0 && _isOpen) {
+                        [self throwErrorWithCode:errno reason:@"Send data error"];
                         return;
                     }
                     continue;
                 }
             }else {
-                [self throwError:TFTPClientErrorCode_RecvData_Fail];
+                [self throwErrorWithCode:errno reason:@"Read data error"];
                 return;
             }
         }
 
         //数据长度过短或不是我们需要服务器地址发送过来的数据都不是我们想要的数据, 直接丢掉
         if (result_recv < 4) continue;
-        if (addr_from.sin_addr.s_addr != _addr_server->sin_addr.s_addr || addr_from.sin_port != _addr_server->sin_port) continue;
 
         //解析操作码
         char opCode = recvBuffer[1];
         if (opCode == TFTP_RRQ || opCode == TFTP_WRQ || opCode == TFTP_ACK) {
 
-            NSLog(@"[TFTPClient] 服务器(IP: %s)发送了错误数据包(操作码: %d)，不理",inet_ntoa(addr_from.sin_addr),opCode);
+            NSLog(@"[TFTPClient] 服务器发送了错误数据包(操作码: %d)，不理",opCode);
 
         }else if (opCode == TFTP_DATA) {
             /* 服务器发送过来数据包 */
@@ -329,8 +275,8 @@ typedef enum : NSUInteger {
 
                 //发送ACK确认包
                 sendLen = [TFTPClientPacket makeACKWithBlockNum:_blocknum sendBuffer:sendBuffer];
-                if (sendto(_sockfd, sendBuffer, sendLen, 0, (struct sockaddr*)_addr_server, _addr_server->sin_len) < 0 && _isOpen) {
-                    [self throwError:TFTPClientErrorCode_SendData_Fail];
+                if (send(_sockfd, sendBuffer, sendLen, 0) < 0 && _isOpen) {
+                    [self throwErrorWithCode:errno reason:@"Send data error"];
                     return;
                 }
             }else {
@@ -338,17 +284,16 @@ typedef enum : NSUInteger {
                 retry++;
                 if (retry >= MAX_RETRY) {
                     NSLog(@"[TFTPClient] 接收数据包错误次数达到上限,发送差错包给客户端");
-                    sendLen = [TFTPClientPacket makeErrorDataWithCode:1
+                    sendLen = [TFTPClientPacket makeErrorDataWithCode:1001
                                                                reason:"The maximum number of retransmissions"
                                                            sendBuffer:sendBuffer];
-                    sendto(_sockfd, sendBuffer, sendLen, 0, (struct sockaddr*)_addr_server, _addr_server->sin_len);
-
-                    [self throwError:TFTPClientErrorCode_RequesrData_Timeout];
+                    send(_sockfd, sendBuffer, sendLen, 0);
+                    [self throwErrorWithCode:1001 reason:@"The maximum number of retransmissions"];
                     return;
                 }else {
                     NSLog(@"[TFTPClient] 服务器发送块号不对(块号:%u), 重发送上个ACK确认包(块号:%u)",blocknum,_blocknum);
-                    if (sendto(_sockfd, sendBuffer, sendLen, 0, (struct sockaddr*)_addr_server, _addr_server->sin_len) < 0 && _isOpen) {
-                        [self throwError:TFTPClientErrorCode_SendData_Fail];
+                    if (send(_sockfd, sendBuffer, sendLen, 0) < 0 && _isOpen) {
+                        [self throwErrorWithCode:errno reason:@"Send data error"];
                         return;
                     }
                 }
@@ -362,13 +307,13 @@ typedef enum : NSUInteger {
         }else if (opCode == TFTP_ERROR) {
 
             NSString *errStr = [[NSString alloc] initWithBytes:&recvBuffer[4] length:result_recv-4 encoding:NSUTF8StringEncoding];
-            NSLog(@"[TFTPClient] 服务器(IP: %s)传送过来差错信息: 错误码 -> %d 错误信息 -> %@",inet_ntoa(addr_from.sin_addr),((recvBuffer[2] << 8) | recvBuffer[3]),errStr);
-            [self throwError:TFTPClientErrorCode_RecvErrorPacket];
+            NSLog(@"[TFTPClient] 服务器传送过来差错信息: 错误码 -> %u 错误信息 -> %@",(((recvBuffer[2] & 0xff) << 8) | (recvBuffer[3] & 0xff)),errStr);
+            [self throwErrorWithCode:(((recvBuffer[2] & 0xff) << 8) | (recvBuffer[3] & 0xff)) reason:errStr];
             return;
 
         }else {
 
-            NSLog(@"[TFTPClient] 服务器(IP: %s)传过来不知名的数据包(操作码: %d)",inet_ntoa(addr_from.sin_addr),opCode);
+            NSLog(@"[TFTPClient] 服务器传过来不知名的数据包(操作码: %d)",opCode);
 
         }
         [self callBackProgress];
@@ -398,14 +343,22 @@ typedef enum : NSUInteger {
 }
 
 ///抛出错误 -> 传送失败
-- (void)throwError:(TFTPClientErrorCode)code
+- (void)throwErrorWithCode:(int)code reason:(NSString *)reason
 {
+    NSString *description;
+    if (code >= 1000) {
+        description = reason;
+    }else {
+        description = [NSString stringWithFormat:@"%@ -> %s",reason,strerror(errno)];
+    }
+    NSDictionary *userInfo = [NSDictionary dictionaryWithObjectsAndKeys:description,NSLocalizedDescriptionKey, nil];
+    NSError *error = [NSError errorWithDomain:@"TFTPClientError" code:code userInfo:userInfo];
+    
     [self closeSocket];
-
+    
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.progressBlock) self.progressBlock = nil;
         if (self.resultBlock) {
-            NSError *error = [TFTPClientError errorWithTFTPErrorCode:code];
             self.resultBlock(nil, error);
             self.resultBlock = nil;
         }

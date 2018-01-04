@@ -57,7 +57,7 @@
             if (isSuccess) {
                 weakSelf.stateLable.text = @"传输完成";
             }else {
-                weakSelf.stateLable.text = [error.userInfo objectForKey:@"description"];
+                weakSelf.stateLable.text = [error.userInfo objectForKey:NSLocalizedDescriptionKey];
             }
             self.btn.selected = NO;
         }];
@@ -71,6 +71,7 @@
             return;
         }
         [self.server closeTFTPServer];
+        self.stateLable.text = @"服务器已经准备就绪";
     }
     
     self.btn.selected = !self.btn.selected;

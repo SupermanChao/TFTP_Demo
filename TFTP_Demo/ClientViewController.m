@@ -73,7 +73,7 @@
                   } result:^(NSData *fileData, NSError *error) {
                       
                       if (error) {
-                          weakSelf.stateLable.text = [error.userInfo objectForKey:@"description"];
+                          weakSelf.stateLable.text = [error.userInfo objectForKey:NSLocalizedDescriptionKey];
                       }else {
                           weakSelf.stateLable.text = @"本次下载完成!";
                           ShowViewController *vc = [[ShowViewController alloc] init];

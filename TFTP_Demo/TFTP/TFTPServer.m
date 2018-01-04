@@ -23,56 +23,6 @@
 #define MAX_RETRY          3              //最大重复传送次数
 #define TFTP_BlockSize     512            //每个数据包截取文件的大小(相对发送包而言,这个是去掉操作码和块号剩余的大小)
 
-typedef enum : NSUInteger {
-    TFTPServerErrorCode_ServerSock_Error      = 0,
-    TFTPServerErrorCode_ReadFile_Fail         = 1,
-    TFTPServerErrorCode_SendData_Fail         = 2,
-    TFTPServerErrorCode_RecvData_Fail         = 3,
-    TFTPServerErrorCode_SendData_Timeout      = 4,
-    TFTPServerErrorCode_RecvErrorPacket       = 5,
-    
-} TFTPServerErrorCode;
-
-@interface TFTPError : NSObject
-///根据错误码返回错误
-+ (NSError *)errorWithTFTPErrorCode:(TFTPServerErrorCode)errorCode;
-@end
-
-@implementation TFTPError
-
-+ (NSError *)errorWithTFTPErrorCode:(TFTPServerErrorCode)errorCode
-{
-    NSString *description;
-    switch (errorCode) {
-        case TFTPServerErrorCode_ServerSock_Error:
-            description = @"套接字发生错误 -> 服务器连接错误";
-            break;
-        case TFTPServerErrorCode_ReadFile_Fail:
-            description = @"根据文件路径没有找到对应文件，应该是文件路径有问题";
-            break;
-        case TFTPServerErrorCode_SendData_Fail:
-            description = @"套接字发送数据错误 -> 服务器发生错误";
-            break;
-        case TFTPServerErrorCode_RecvData_Fail:
-            description = @"套接字读取数据错误-> 服务器发生错误";
-            break;
-        case TFTPServerErrorCode_SendData_Timeout:
-            description = @"套接字重发同一个数据包次数达到上限 -> 服务器发送数据超时";
-            break;
-        case TFTPServerErrorCode_RecvErrorPacket:
-            description = @"套接字接收到差错包或者错误包";
-            break;
-        default:
-            description = @"未知错误";
-            break;
-    }
-    
-    NSError *error = [NSError errorWithDomain:@"TFTPServerError" code:errorCode userInfo:@{@"description" : description}];
-    return error;
-}
-@end
-
-
 @interface TFTPServerPacket : NSObject
 /**
  *  @brief  填充Data数据包
@@ -149,7 +99,6 @@ typedef enum : NSUInteger {
     NSUInteger _fileTotalLen;           //文件的总长度
     NSUInteger _alreadySendLen;         //已经发送了的长度
     uint _blocknum;                     //数据包的块数
-    struct sockaddr_in *_addr_client;   //客户端地址结构体指针
 }
 @property (nonatomic, copy) void(^progressBlock)(float progress);
 @property (nonatomic, copy) void(^resultBlock)(BOOL isSuccess, NSError *error);
@@ -179,13 +128,22 @@ typedef enum : NSUInteger {
 ///外部调用, 关闭TFTP服务器, 先像客户端发送一个差错包, 告诉客户端服务器要关了
 - (void)closeTFTPServer
 {
-    if (_sockfd > 0 && _addr_client!=NULL) {
-        //先发送一个差错包
-        char buffer[512];
-        NSUInteger len = [TFTPServerPacket makeErrorDataWithCode:3
-                                                          reason:"Server Close"
-                                                      sendBuffer:buffer];
-        sendto(_sockfd, buffer, len, 0, (struct sockaddr*)_addr_client, _addr_client->sin_len);
+    if (_sockfd > 0) {
+        
+        struct sockaddr_in addr_peer;
+        socklen_t addr_peer_len = sizeof(addr_peer);
+        addr_peer.sin_len = addr_peer_len;
+        
+        if (getpeername(_sockfd, (struct sockaddr*)&addr_peer, &addr_peer_len) == 0) {
+            
+            if (addr_peer.sin_port != 0 && addr_peer.sin_addr.s_addr > 1) {
+                char buffer[512];
+                NSUInteger len = [TFTPServerPacket makeErrorDataWithCode:1003
+                                                                  reason:"Server Close"
+                                                              sendBuffer:buffer];
+                send(_sockfd, buffer, len, 0);
+            }
+        }
     }
     [self closeSocket];
 }
@@ -195,31 +153,6 @@ typedef enum : NSUInteger {
 {
     _isOpen = NO;
     if (_sockfd > 0) close(_sockfd);
-}
-
-///初始化套接字
-- (BOOL)initSocketWithBindPort:(uint16_t)bindPort
-{
-    _sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    
-    if (_sockfd <= 0) return NO;
-    
-    struct sockaddr_in addr_server;
-    addr_server.sin_len = sizeof(struct sockaddr_in);
-    addr_server.sin_family = AF_INET;
-    addr_server.sin_port = htons(bindPort);
-    addr_server.sin_addr.s_addr = htonl(INADDR_ANY);
-    
-    if (bind(_sockfd, (struct sockaddr*)&addr_server, addr_server.sin_len) < 0) return NO;
-    
-    fd_set readfds, writefds;
-    FD_ZERO(&readfds); FD_ZERO(&writefds);
-    FD_SET(_sockfd, &readfds);
-    FD_SET(_sockfd, &writefds);
-    int num = select(FD_SETSIZE, &readfds, &writefds, NULL, NULL);
-    if (num <= 0) return NO;
-    
-    return YES;
 }
 
 ///开始监听UDP
@@ -233,9 +166,22 @@ typedef enum : NSUInteger {
     _blocknum = 0;
     _fileData = nil;
     
-    //套接字初始化
-    if ([self initSocketWithBindPort:bindPort] == NO) {
-        [self throwError:TFTPServerErrorCode_ServerSock_Error];
+    //套接字初始化(Create Socket)
+    _sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (_sockfd <= 0) {
+        [self throwErrorWithCode:errno reason:@"Failed to create socket"];
+        return;
+    }
+    
+    //绑定监听地址
+    struct sockaddr_in addr_server;
+    addr_server.sin_len = sizeof(struct sockaddr_in);
+    addr_server.sin_family = AF_INET;
+    addr_server.sin_port = htons(bindPort);
+    addr_server.sin_addr.s_addr = htonl(INADDR_ANY);
+    
+    if (bind(_sockfd, (struct sockaddr*)&addr_server, addr_server.sin_len) < 0) {
+        [self throwErrorWithCode:errno reason:@"Binding socket failed"];
         return;
     }
     
@@ -247,7 +193,7 @@ typedef enum : NSUInteger {
     //设置接收请求连接超时时间为30s
     struct timeval timeout = {30,0};
     if (setsockopt(_sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(struct timeval)) < 0) {
-        printf("开始设置Socket服务器接收连接超时失败：%s\n",strerror(errno));
+        printf("开始设置Socket服务器接收连接超时失败: %s\n",strerror(errno));
     }
     
     while (1) {
@@ -257,15 +203,19 @@ typedef enum : NSUInteger {
         char recv_buffer[1024];     //接收数据缓冲区
         ssize_t result_recv = recvfrom(_sockfd, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&addr_clict, &addr_clict_len);
         if (result_recv < 0 && _isOpen) {
-            NSLog(@"1-->%d %s",errno,strerror(errno));
-            [self throwError:TFTPServerErrorCode_RecvData_Fail];
+            [self throwErrorWithCode:errno reason:@"Read data error"];
             return;
         }
+        
         if (result_recv < 4) continue; //数据包长度必须大于或等于4,否则不是我们想要的数据
         
         if (recv_buffer[1] == TFTP_RRQ) { //操作码是读请求 -> 有客户端连接
             
-            _addr_client = &addr_clict; //记录下客户端地址信息
+            //注册客户端地址信息
+            if (connect(_sockfd, (struct sockaddr*)&addr_clict, sizeof(addr_clict)) != 0) {
+                [self throwErrorWithCode:errno reason:@"Registration destination address failed"];
+                return;
+            }
             
             //1. 解析出文件名
             char* cFileName = &recv_buffer[2];
@@ -279,12 +229,12 @@ typedef enum : NSUInteger {
             if (_fileTotalLen == 0) {
                 
                 char send_buffer[512];
-                NSUInteger len = [TFTPServerPacket makeErrorDataWithCode:2
+                NSUInteger len = [TFTPServerPacket makeErrorDataWithCode:1000
                                                                   reason:"Request file name error"
                                                               sendBuffer:send_buffer];
                 sendto(_sockfd, send_buffer, len, 0, (struct sockaddr*)&addr_clict, addr_clict.sin_len);
                 
-                [self throwError:TFTPServerErrorCode_ReadFile_Fail];
+                [self throwErrorWithCode:errno reason:@"Request file name error"];
                 return;
             }
             
@@ -316,8 +266,8 @@ typedef enum : NSUInteger {
                                              blocknum:_blocknum];
     if (sendLen < (TFTP_BlockSize + 4)) isLastPacket = YES; //记录下是发送的最后一个数据包
     
-    if (sendto(_sockfd, send_buffer, sendLen, 0, (struct sockaddr*)_addr_client, _addr_client->sin_len) < 0 && _isOpen) {
-        [self throwError:TFTPServerErrorCode_SendData_Fail];
+    if (send(_sockfd, send_buffer, sendLen, 0) < 0 && _isOpen) {
+        [self throwErrorWithCode:errno reason:@"Send data error"];
         return;
     }
     _alreadySendLen = sendLen - 4;
@@ -333,50 +283,42 @@ typedef enum : NSUInteger {
         
         if (_isOpen == NO) return; //服务器关闭直接退出监听
         
-        //来者套接字地址
-        struct sockaddr_in addr_from;
-        socklen_t addr_from_len = sizeof(struct sockaddr_in);
-        addr_from.sin_len = addr_from_len;
-        
-        ssize_t result_recv = recvfrom(_sockfd, recv_buffer, sizeof(recv_buffer), 0, (struct sockaddr*)&addr_from, &addr_from_len);
+        ssize_t result_recv = recv(_sockfd, recv_buffer, sizeof(recv_buffer), 0);
         if (result_recv < 0 && _isOpen) {
-            
             if (errno == EAGAIN) { //接收超时重传
                 retry ++;
                 if (retry >= MAX_RETRY) {
                     NSLog(@"[TFTPServer] 接收ACK超时,发送差错包给客户端");
-                    sendLen = [TFTPServerPacket makeErrorDataWithCode:1
+                    sendLen = [TFTPServerPacket makeErrorDataWithCode:1001
                                                                reason:"The maximum number of retransmissions"
                                                            sendBuffer:send_buffer];
-                    sendto(_sockfd, send_buffer, sendLen, 0, (struct sockaddr*)_addr_client, _addr_client->sin_len);
-                    [self throwError:TFTPServerErrorCode_SendData_Timeout];
+                    send(_sockfd, send_buffer, sendLen, 0);
+                    [self throwErrorWithCode:1001 reason:@"The maximum number of retransmissions"];
                     return;
                 }else {
                     NSLog(@"[TFTPServer] 接收客户端确认包超时 -> 重传上次的包(块号:%u)",_blocknum);
-                    if (sendto(_sockfd, send_buffer, sendLen, 0, (struct sockaddr*)_addr_client, _addr_client->sin_len) < 0 && _isOpen) {
-                        [self throwError:TFTPServerErrorCode_SendData_Fail];
+                    if (send(_sockfd, send_buffer, sendLen, 0) < 0 && _isOpen) {
+                        [self throwErrorWithCode:errno reason:@"Send data error"];
                         return;
                     }
                     continue;
                 }
             }else {
-                [self throwError:TFTPServerErrorCode_RecvData_Fail];
+                [self throwErrorWithCode:errno reason:@"Read data error"];
                 return;
             }
         }
         
-        //不是我们连接客户端的地址的数据包 或 数据包长度小于4 都不要
-        if (addr_from.sin_addr.s_addr != _addr_client->sin_addr.s_addr || addr_from.sin_port != _addr_client->sin_port) continue;
+        //数据包长度小于4不要
         if (result_recv < 4) continue;
         
         //先解析操作码
         char opCode = recv_buffer[1];
         if (opCode == TFTP_RRQ || opCode == TFTP_WRQ || opCode == TFTP_DATA) {
             
-            NSLog(@"[TFTPServer] 客户端(IP: %s)发错了数据包(操作码: %d), 不理",inet_ntoa(addr_from.sin_addr),opCode);
+            NSLog(@"[TFTPServer] 客户端发错了数据包(操作码: %d), 不理",opCode);
             
-        }else if (opCode == TFTP_ACK) {
-            /** 收到ACK数据包 */
+        }else if (opCode == TFTP_ACK) { //收到ACK数据包
             
             //①. 解析出确认块号
             uint clict_sureblocknum = ((recv_buffer[2]&0xff)<<8)|((recv_buffer[3]&0xff));
@@ -402,8 +344,8 @@ typedef enum : NSUInteger {
                     
                     if (sendLen < (TFTP_BlockSize + 4)) isLastPacket = YES; //记录下是发送的最后一个数据包
                     
-                    if (sendto(_sockfd, send_buffer, sendLen, 0, (struct sockaddr*)_addr_client, _addr_client->sin_len) < 0 && _isOpen) {
-                        [self throwError:TFTPServerErrorCode_SendData_Fail];
+                    if (send(_sockfd, send_buffer, sendLen, 0) < 0 && _isOpen) {
+                        [self throwErrorWithCode:errno reason:@"Send data error"];
                         return;
                     }
                     _alreadySendLen += (sendLen - 4);
@@ -413,24 +355,24 @@ typedef enum : NSUInteger {
                     retry ++;
                     if (retry >= MAX_RETRY) {
                         NSLog(@"[TFTPServer] 接收ACK错误次数达到上限,发送差错包给客户端");
-                        sendLen = [TFTPServerPacket makeErrorDataWithCode:1
+                        sendLen = [TFTPServerPacket makeErrorDataWithCode:1001
                                                                    reason:"The maximum number of retransmissions"
                                                                sendBuffer:send_buffer];
-                        sendto(_sockfd, send_buffer, sendLen, 0, (struct sockaddr*)_addr_client, _addr_client->sin_len);
                         
-                        [self throwError:TFTPServerErrorCode_SendData_Timeout];
+                        send(_sockfd, send_buffer, sendLen, 0);
+                        [self throwErrorWithCode:1001 reason:@"The maximum number of retransmissions"];
                         return;
                     }else {
                         NSLog(@"[TFTPServer] 客户端发送ACK块号有误(块号:%u), 重传上次的包(块号:%u)",_blocknum,clict_sureblocknum);
-                        if (sendto(_sockfd, send_buffer, sendLen, 0, (struct sockaddr*)_addr_client, _addr_client->sin_len) < 0 && _isOpen) {
-                            [self throwError:TFTPServerErrorCode_SendData_Fail];
+                        if (send(_sockfd, send_buffer, sendLen, 0) < 0 && _isOpen) {
+                            [self throwErrorWithCode:errno reason:@"Send data error"];
                             return;
                         }
                     }
                 }else {
                     
                     NSLog(@"[TFTPServer] 客户端返回的确认块号不对 _blocknum:%u clict_sureblocknum:%u",_blocknum,clict_sureblocknum);
-                    [self throwError:TFTPServerErrorCode_RecvErrorPacket];
+                    [self throwErrorWithCode:1002 reason:@"Request block number error"];
                     return;
                 }
             }
@@ -438,13 +380,13 @@ typedef enum : NSUInteger {
             
             //客户端那边发送过来了错误包
             NSString *errStr = [[NSString alloc] initWithBytes:&recv_buffer[4] length:result_recv-4 encoding:NSUTF8StringEncoding];
-            NSLog(@"[TFTPServer] 客户端(IP: %s)传送过来差错信息:  错误码 -> %d 错误信息 -> %@",inet_ntoa(addr_from.sin_addr),((recv_buffer[2] << 8) | recv_buffer[3]),errStr);
-            [self throwError:TFTPServerErrorCode_RecvErrorPacket];
+            NSLog(@"[TFTPServer] 客户端传送过来差错信息:  错误码 -> %u 错误信息 -> %@",(((recv_buffer[2] & 0xff) << 8) | (recv_buffer[3] & 0xff)),errStr);
+            [self throwErrorWithCode:(((recv_buffer[2] & 0xff) << 8) | (recv_buffer[3] & 0xff)) reason:errStr];
             return;
             
         }else {
             
-            NSLog(@"[TFTPServer] 客户端(IP: %s)发错了数据包(操作码: %d), 不理",inet_ntoa(addr_from.sin_addr),opCode);
+            NSLog(@"[TFTPServer] 客户端发错了数据包(操作码: %d), 不理",opCode);
             
         }
         
@@ -468,13 +410,22 @@ typedef enum : NSUInteger {
 }
 
 ///抛出错误 -> 传送失败
-- (void)throwError:(TFTPServerErrorCode)code
+- (void)throwErrorWithCode:(int)code reason:(NSString *)reason
 {
+    NSString *description;
+    if (code >= 1000) {
+        description = reason;
+    }else {
+        description = [NSString stringWithFormat:@"%@ -> %s",reason,strerror(errno)];
+    }
+    NSDictionary *userInfo = [NSDictionary dictionaryWithObjectsAndKeys:description,NSLocalizedDescriptionKey, nil];
+    NSError *error = [NSError errorWithDomain:@"TFTPServerError" code:code userInfo:userInfo];
+    
     [self closeSocket];
+    
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.progressBlock) self.progressBlock = nil;
         if (self.resultBlock) {
-            NSError *error = [TFTPError errorWithTFTPErrorCode:code];
             self.resultBlock(NO, error);
             self.resultBlock = nil;
         }
